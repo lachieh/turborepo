@@ -275,10 +275,21 @@ impl PackageJson {
     }
 
     /// Returns (name, optional version) from devEngines.packageManager if present.
+    /// Supports both object and array forms per the npm spec.
+    /// For arrays, returns the first entry with a valid name.
     /// See https://docs.npmjs.com/cli/v11/configuring-npm/package-json#devengines
     pub fn dev_engines_package_manager(&self) -> Option<(&str, Option<&str>)> {
         let dev_engines = self.other.get("devEngines")?.as_object()?;
-        let pm = dev_engines.get("packageManager")?.as_object()?;
+        let pm_value = dev_engines.get("packageManager")?;
+
+        let pm = if let Some(obj) = pm_value.as_object() {
+            obj
+        } else if let Some(arr) = pm_value.as_array() {
+            arr.iter().find_map(|v| v.as_object()?.get("name")?.as_str().and(v.as_object()))?
+        } else {
+            return None;
+        };
+
         let name = pm.get("name")?.as_str()?;
         let version = pm.get("version").and_then(|v| v.as_str());
         Some((name, version))
@@ -395,6 +406,52 @@ mod test {
             "name": "test",
             "devEngines": {
                 "packageManager": "pnpm"
+            }
+        });
+        let pkg = PackageJson::from_value(json).unwrap();
+        assert!(pkg.dev_engines_package_manager().is_none());
+    }
+
+    #[test]
+    fn test_dev_engines_package_manager_array() {
+        let json = json!({
+            "name": "test",
+            "devEngines": {
+                "packageManager": [
+                    { "name": "pnpm", "version": ">=9" },
+                    { "name": "yarn", "version": "4.x" }
+                ]
+            }
+        });
+        let pkg = PackageJson::from_value(json).unwrap();
+        let (name, version) = pkg.dev_engines_package_manager().unwrap();
+        assert_eq!(name, "pnpm");
+        assert_eq!(version, Some(">=9"));
+    }
+
+    #[test]
+    fn test_dev_engines_package_manager_array_skips_invalid() {
+        let json = json!({
+            "name": "test",
+            "devEngines": {
+                "packageManager": [
+                    { "version": ">=9" },
+                    { "name": "yarn", "version": "4.x" }
+                ]
+            }
+        });
+        let pkg = PackageJson::from_value(json).unwrap();
+        let (name, version) = pkg.dev_engines_package_manager().unwrap();
+        assert_eq!(name, "yarn");
+        assert_eq!(version, Some("4.x"));
+    }
+
+    #[test]
+    fn test_dev_engines_package_manager_empty_array() {
+        let json = json!({
+            "name": "test",
+            "devEngines": {
+                "packageManager": []
             }
         });
         let pkg = PackageJson::from_value(json).unwrap();
